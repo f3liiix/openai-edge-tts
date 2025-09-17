@@ -85,6 +85,26 @@ def text_to_speech():
         voice = data.get('voice', DEFAULT_VOICE)
         response_format = data.get('response_format', DEFAULT_RESPONSE_FORMAT)
         speed = float(data.get('speed', DEFAULT_SPEED))
+
+        include_word_boundaries = bool(data.get('include_word_boundaries', False))
+        subtitle_format = data.get('subtitle_format')
+        if subtitle_format:
+            subtitle_format = subtitle_format.strip().lower()
+
+        segment_max_gap = data.get('segment_max_gap')
+
+        try:
+            segment_max_gap = float(segment_max_gap) if segment_max_gap is not None else None
+        except (TypeError, ValueError):
+            return jsonify({"error": "segment_max_gap must be a number"}), 400
+
+        response_mode = data.get('response_mode', 'binary')
+        if isinstance(response_mode, str):
+            response_mode = response_mode.lower()
+        else:
+            response_mode = 'binary'
+
+        metadata_requested = include_word_boundaries or bool(subtitle_format) or bool(data.get('return_metadata', False)) or response_mode == 'json'
         
         # Check stream format - only "sse" triggers streaming
         stream_format = data.get('stream_format', 'audio')  # 'audio' (default) or 'sse'
@@ -108,27 +128,71 @@ def text_to_speech():
                 }
             )
         else:
-            # Return raw audio data (like OpenAI) - can be piped to ffplay
-            output_file_path = generate_speech(text, voice, response_format, speed)
-            
+            # Return raw audio data (like OpenAI) or JSON payload when metadata requested
+            try:
+                synthesis_result = generate_speech(
+                    text,
+                    voice,
+                    response_format,
+                    speed,
+                    include_word_boundaries=include_word_boundaries or bool(subtitle_format),
+                    subtitle_format=subtitle_format,
+                    segment_max_gap=segment_max_gap,
+                )
+            except ValueError as exc:
+                return jsonify({"error": str(exc)}), 400
+
+            if isinstance(synthesis_result, dict):
+                output_file_path = synthesis_result["audio_path"]
+                metadata_payload = synthesis_result
+            else:
+                output_file_path = synthesis_result
+                metadata_payload = None
+
             # Read the file and return raw audio data
             with open(output_file_path, 'rb') as audio_file:
                 audio_data = audio_file.read()
-            
+
             # Clean up the temporary file
             try:
                 os.unlink(output_file_path)
             except OSError:
                 pass  # File might already be cleaned up
-            
-            return Response(
-                audio_data,
-                mimetype=mime_type,
-                headers={
-                    'Content-Type': mime_type,
-                    'Content-Length': str(len(audio_data))
-                }
-            )
+
+            if not metadata_requested:
+                return Response(
+                    audio_data,
+                    mimetype=mime_type,
+                    headers={
+                        'Content-Type': mime_type,
+                        'Content-Length': str(len(audio_data))
+                    }
+                )
+
+            encoded_audio = base64.b64encode(audio_data).decode('utf-8')
+
+            response_payload = {
+                "audio": encoded_audio,
+                "audio_format": response_format,
+                "mime_type": mime_type,
+                "size_bytes": len(audio_data),
+            }
+
+            if metadata_payload:
+                word_boundaries = metadata_payload.get("word_boundaries")
+                if word_boundaries:
+                    response_payload["word_boundaries"] = word_boundaries
+
+                segments = metadata_payload.get("segments")
+                if segments:
+                    response_payload["segments"] = segments
+
+                subtitle_text = metadata_payload.get("subtitle")
+                if subtitle_text:
+                    response_payload["subtitle"] = subtitle_text
+                    response_payload["subtitle_format"] = metadata_payload.get("subtitle_format") or subtitle_format
+
+            return jsonify(response_payload)
             
     except Exception as e:
         if DETAILED_ERROR_LOGGING:

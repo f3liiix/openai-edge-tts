@@ -20,6 +20,8 @@ This project provides a local, OpenAI-compatible text-to-speech (TTS) API using 
 
 - **OpenAI-Compatible Endpoint**: `/v1/audio/speech` with similar request structure and behavior.
 - **SSE Streaming Support**: Real-time audio streaming via Server-Sent Events when `stream_format: "sse"` is specified.
+- **Word Timing Metadata**: Request word-boundary timestamps and auto-generated SRT/WebVTT subtitles alongside audio output.
+- **Subtitle Tuning**: Configure subtitle silence thresholds via request parameters or environment variables—ideal for fast-paced short videos (e.g., TikTok).
 - **Supported Voices**: Maps OpenAI voices (alloy, echo, fable, onyx, nova, shimmer) to `edge-tts` equivalents.
 - **Flexible Formats**: Supports multiple audio formats (mp3, opus, aac, flac, wav, pcm).
 - **Adjustable Speed**: Option to modify playback speed (0.25x to 4.0x).
@@ -70,6 +72,8 @@ REQUIRE_API_KEY=True
 REMOVE_FILTER=False
 EXPAND_API=True
 DETAILED_ERROR_LOGGING=True
+# Optional subtitle segmentation tuning (seconds)
+# SUBTITLE_MAX_GAP=0.4
 ```
 
 Or, copy the default `.env.example` with the following:
@@ -235,6 +239,11 @@ Generates audio from the input text. Available parameters:
 - **response_format** (string): Audio format. Options: `mp3`, `opus`, `aac`, `flac`, `wav`, `pcm` (default: `mp3`).
 - **speed** (number): Playback speed (0.25 to 4.0). Default is `1.0`.
 - **stream_format** (string): Response format. Options: `"audio"` (raw audio data, default) or `"sse"` (Server-Sent Events streaming with JSON events).
+- **include_word_boundaries** (boolean): When `true`, returns word-level timestamp metadata in the JSON response.
+- **subtitle_format** (string): When set to `"srt"`, `"vtt"`, or `"webvtt"`, generates subtitle text aligned with the audio. Automatically implies `include_word_boundaries`.
+- **return_metadata** (boolean): Forces a JSON response containing base64 audio even if no metadata options are enabled.
+- **response_mode** (string): Set to `"json"` to force a JSON payload with base64 audio data; defaults to `"binary"`.
+- **segment_max_gap** (number): Silence gap (seconds) that triggers a new subtitle segment. Default: `0.4` seconds.
 
 **Note:** The API is fully compatible with OpenAI's TTS API specification. The `instructions` parameter (for fine-tuning voice characteristics) is not currently supported, but all other parameters work identically to OpenAI's implementation.
 
@@ -322,6 +331,46 @@ data: {"type": "speech.audio.delta", "audio": "base64-encoded-audio-chunk"}
 
 data: {"type": "speech.audio.done", "usage": {"input_tokens": 12, "output_tokens": 0, "total_tokens": 12}}
 ```
+
+#### Audio with Word Timings & Subtitles (JSON Response)
+
+Request word-level timestamps and ready-to-save subtitles together with the audio. The endpoint returns a JSON payload containing base64 audio, word boundary metadata, and subtitle text:
+
+```bash
+curl -X POST http://localhost:5050/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -H "Authorization: Bearer your_api_key_here" \
+  -d '{
+    "input": "Hello, welcome to the demo!",
+    "voice": "nova",
+    "response_format": "mp3",
+    "include_word_boundaries": true,
+    "subtitle_format": "srt",
+    "segment_max_gap": 0.4
+  }'
+```
+
+Example response (truncated):
+
+```json
+{
+  "audio": "<base64 mp3>...",
+  "audio_format": "mp3",
+  "mime_type": "audio/mpeg",
+  "size_bytes": 48234,
+  "word_boundaries": [
+    { "text": "Hello", "start": 0.0, "end": 0.44 },
+    { "text": "welcome", "start": 0.44, "end": 0.79 }
+  ],
+  "segments": [
+    { "text": "Hello, welcome to the demo!", "start": 0.0, "end": 1.92 }
+  ],
+  "subtitle_format": "srt",
+  "subtitle": "1\n00:00:00,000 --> 00:00:01,920\nHello, welcome to the demo!\n"
+}
+```
+
+Write the `audio` field to disk after base64 decoding, and save `subtitle` content directly as an `.srt` file for import into video editors.
 
 #### JavaScript/Web Usage
 

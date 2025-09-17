@@ -6,6 +6,10 @@ import tempfile
 import subprocess
 import os
 from pathlib import Path
+from typing import Dict, Iterable, List, Optional
+
+TICKS_PER_SECOND = 10_000_000  # Azure edge-tts reports offsets/durations in 100ns units
+DEFAULT_SEGMENT_MAX_GAP = float(os.getenv('SUBTITLE_MAX_GAP', '0.4'))
 
 from utils import DETAILED_ERROR_LOGGING
 from config import DEFAULT_CONFIGS
@@ -66,8 +70,210 @@ def generate_speech_stream(text, voice, speed=1.0):
     """Generate streaming speech audio (synchronous wrapper)."""
     return asyncio.run(_generate_audio_stream(text, voice, speed))
 
-async def _generate_audio(text, voice, response_format, speed):
-    """Generate TTS audio and optionally convert to a different format."""
+def _coerce_ticks(value: Optional[int]) -> int:
+    if value is None:
+        return 0
+    return int(value)
+
+
+def _ticks_to_seconds(value: int) -> float:
+    return value / TICKS_PER_SECOND
+
+
+def _should_end_segment(word_text: str, previous_end: Optional[float], current_start: float,
+                        max_gap: float) -> bool:
+    if not word_text:
+        return False
+
+    # Break on explicit punctuation or newline characters
+    if any(ch in word_text for ch in ("\n", "\r")):
+        return True
+    if word_text[-1] in ".!?！？。;；":
+        return True
+
+    if previous_end is None:
+        return False
+
+    # If there is a long gap between words, start a new subtitle segment
+    return (current_start - previous_end) > max_gap
+
+
+def _append_word_text(buffer: str, word_text: str) -> str:
+    if not buffer:
+        return word_text
+
+    if not word_text:
+        return buffer
+
+    prev_char = buffer[-1]
+    next_char = word_text[0]
+
+    if prev_char.isspace():
+        return buffer + word_text
+
+    # Add a space between contiguous latin words to improve readability
+    if prev_char.isalnum() and next_char.isalnum() and prev_char.isascii() and next_char.isascii():
+        return f"{buffer} {word_text}"
+
+    return buffer + word_text
+
+
+def _segments_from_word_boundaries(word_boundaries: List[Dict[str, float]],
+                                   max_gap: float) -> List[Dict[str, float]]:
+    segments: List[Dict[str, float]] = []
+    current_text = ""
+    current_start: Optional[float] = None
+    current_end: Optional[float] = None
+
+    for boundary in word_boundaries:
+        word_text = boundary["text"]
+        word_start = boundary["start"]
+        word_end = boundary["end"]
+
+        if current_start is None:
+            current_start = word_start
+            current_end = word_end
+            current_text = word_text
+            continue
+
+        # Decide whether to close the current segment before appending this word
+        should_close = _should_end_segment(word_text, current_end, word_start, max_gap)
+
+        if should_close:
+            if current_text.strip():
+                segments.append({
+                    "text": current_text.strip(),
+                    "start": current_start,
+                    "end": current_end if current_end is not None else word_start
+                })
+            # Reset for the next segment
+            current_start = word_start
+            current_end = word_end
+            current_text = word_text
+            continue
+
+        current_text = _append_word_text(current_text, word_text)
+        current_end = word_end
+
+    if current_text.strip() and current_start is not None and current_end is not None:
+        segments.append({
+            "text": current_text.strip(),
+            "start": current_start,
+            "end": current_end
+        })
+
+    return segments
+
+
+def _format_srt_timestamp(total_seconds: float) -> str:
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    seconds = int(total_seconds % 60)
+    milliseconds = int(round((total_seconds - int(total_seconds)) * 1000))
+    if milliseconds == 1000:
+        milliseconds = 0
+        seconds += 1
+        if seconds == 60:
+            seconds = 0
+            minutes += 1
+            if minutes == 60:
+                minutes = 0
+                hours += 1
+    return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
+
+
+def _format_vtt_timestamp(total_seconds: float) -> str:
+    hours = int(total_seconds // 3600)
+    minutes = int((total_seconds % 3600) // 60)
+    seconds = int(total_seconds % 60)
+    milliseconds = int(round((total_seconds - int(total_seconds)) * 1000))
+    if milliseconds == 1000:
+        milliseconds = 0
+        seconds += 1
+        if seconds == 60:
+            seconds = 0
+            minutes += 1
+            if minutes == 60:
+                minutes = 0
+                hours += 1
+    return f"{hours:02}:{minutes:02}:{seconds:02}.{milliseconds:03}"
+
+
+def _subtitle_from_segments(segments: List[Dict[str, float]], subtitle_format: Optional[str]) -> Optional[str]:
+    if not subtitle_format or not segments:
+        return None
+
+    subtitle_format = subtitle_format.lower()
+
+    if subtitle_format not in {"srt", "vtt", "webvtt"}:
+        raise ValueError(f"Unsupported subtitle format '{subtitle_format}'")
+
+    if subtitle_format == "srt":
+        lines: List[str] = []
+        for idx, item in enumerate(segments, start=1):
+            lines.append(str(idx))
+            lines.append(f"{_format_srt_timestamp(item['start'])} --> {_format_srt_timestamp(item['end'])}")
+            lines.append(item['text'])
+            lines.append("")
+        return "\n".join(lines).strip() + "\n"
+
+    # Default to WebVTT style output
+    lines = ["WEBVTT", ""]
+    for item in segments:
+        lines.append(f"{_format_vtt_timestamp(item['start'])} --> {_format_vtt_timestamp(item['end'])}")
+        lines.append(item['text'])
+        lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _build_audio_result(audio_path: str,
+                        include_word_boundaries: bool,
+                        subtitle_format: Optional[str],
+                        word_boundary_payloads: List[Dict[str, object]],
+                        segment_max_gap: float) -> Dict[str, object]:
+    metadata = None
+    segments: Optional[List[Dict[str, float]]] = None
+    subtitle_payload = None
+
+    if include_word_boundaries and word_boundary_payloads:
+        metadata = _normalize_word_boundaries(word_boundary_payloads)
+        segments = _segments_from_word_boundaries(metadata, segment_max_gap)
+    if subtitle_format and segments:
+        subtitle_payload = _subtitle_from_segments(segments, subtitle_format)
+
+    return {
+        "audio_path": audio_path,
+        "word_boundaries": metadata,
+        "subtitle_format": subtitle_format if subtitle_payload else None,
+        "subtitle": subtitle_payload,
+        "segments": segments,
+    }
+
+
+def _normalize_word_boundaries(boundaries: Iterable[Dict[str, object]]) -> List[Dict[str, float]]:
+    normalized: List[Dict[str, float]] = []
+    for boundary in boundaries:
+        text = str(boundary.get("text", ""))
+        offset_ticks = _coerce_ticks(boundary.get("offset") or boundary.get("Offset"))
+        duration_ticks = _coerce_ticks(boundary.get("duration") or boundary.get("Duration"))
+        start_seconds = _ticks_to_seconds(offset_ticks)
+        end_seconds = _ticks_to_seconds(offset_ticks + duration_ticks)
+
+        normalized.append({
+            "text": text,
+            "offset_ticks": offset_ticks,
+            "duration_ticks": duration_ticks,
+            "start": start_seconds,
+            "end": end_seconds,
+        })
+
+    return normalized
+
+
+async def _generate_audio(text, voice, response_format, speed, include_word_boundaries=False,
+                          subtitle_format: Optional[str] = None,
+                          segment_max_gap: float = DEFAULT_SEGMENT_MAX_GAP):
+    """Generate TTS audio and optionally collect metadata and convert to different formats."""
     # Determine if the voice is an OpenAI-compatible voice or a direct edge-tts voice
     edge_tts_voice = voice_mapping.get(voice, voice)  # Use mapping if in OpenAI names, otherwise use as-is
 
@@ -82,19 +288,47 @@ async def _generate_audio(text, voice, response_format, speed):
         print(f"Error converting speed: {e}. Defaulting to +0%.")
         speed_rate = "+0%"
 
-    # Generate the MP3 file
-    communicator = edge_tts.Communicate(text=text, voice=edge_tts_voice, rate=speed_rate)
-    await communicator.save(temp_mp3_path)
+    boundary_mode = "WordBoundary" if include_word_boundaries else "SentenceBoundary"
+
+    communicator = edge_tts.Communicate(
+        text=text,
+        voice=edge_tts_voice,
+        rate=speed_rate,
+        boundary=boundary_mode,
+    )
+
+    word_boundary_payloads: List[Dict[str, object]] = []
+
+    with open(temp_mp3_path, "wb") as audio_file:
+        async for chunk in communicator.stream():
+            chunk_type = chunk.get("type") if isinstance(chunk, dict) else None
+            if chunk_type == "audio":
+                audio_file.write(chunk.get("data", b""))
+            elif chunk_type == "WordBoundary" and include_word_boundaries:
+                word_boundary_payloads.append(chunk)
+
     temp_mp3_file_obj.close() # Explicitly close our file object for the initial mp3
 
     # If the requested format is mp3, return the generated file directly
     if response_format == "mp3":
-        return temp_mp3_path
+        return _build_audio_result(
+            temp_mp3_path,
+            include_word_boundaries,
+            subtitle_format,
+            word_boundary_payloads,
+            segment_max_gap,
+        )
 
     # Check if FFmpeg is installed
     if not is_ffmpeg_installed():
         print("FFmpeg is not available. Returning unmodified mp3 file.")
-        return temp_mp3_path # Return the original mp3 path, it won't be cleaned by this function
+        return _build_audio_result(
+            temp_mp3_path,
+            include_word_boundaries,
+            subtitle_format,
+            word_boundary_payloads,
+            segment_max_gap,
+        )
 
     # Create a new temporary file for the converted output
     converted_file_obj = tempfile.NamedTemporaryFile(delete=False, suffix=f".{response_format}")
@@ -149,10 +383,39 @@ async def _generate_audio(text, voice, response_format, speed):
     # Clean up the original temporary file (original mp3) as it's now converted
     Path(temp_mp3_path).unlink(missing_ok=True)
 
-    return converted_path
+    return _build_audio_result(
+        converted_path,
+        include_word_boundaries,
+        subtitle_format,
+        word_boundary_payloads,
+        segment_max_gap,
+    )
 
-def generate_speech(text, voice, response_format, speed=1.0):
-    return asyncio.run(_generate_audio(text, voice, response_format, speed))
+
+def generate_speech(text, voice, response_format, speed=1.0, *, include_word_boundaries: bool = False,
+                    subtitle_format: Optional[str] = None,
+                    segment_max_gap: Optional[float] = None):
+    segment_max_gap = segment_max_gap if segment_max_gap is not None else DEFAULT_SEGMENT_MAX_GAP
+    result = asyncio.run(
+        _generate_audio(
+            text,
+            voice,
+            response_format,
+            speed,
+            include_word_boundaries=include_word_boundaries or bool(subtitle_format),
+            subtitle_format=subtitle_format,
+            segment_max_gap=segment_max_gap,
+        )
+    )
+
+    if isinstance(result, str):
+        # Backwards compatibility: when _generate_audio returned a path (mp3 without metadata)
+        return result
+
+    if not include_word_boundaries and not subtitle_format:
+        return result["audio_path"]
+
+    return result
 
 def get_models():
     return model_data
