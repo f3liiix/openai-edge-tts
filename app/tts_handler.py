@@ -10,9 +10,9 @@ from typing import Dict, Iterable, List, Optional
 
 TICKS_PER_SECOND = 10_000_000  # Azure edge-tts reports offsets/durations in 100ns units
 DEFAULT_SEGMENT_MAX_GAP = float(os.getenv('SUBTITLE_MAX_GAP', '0.4'))
-DEFAULT_TAIL_SILENCE_DURATION = float(os.getenv('AUDIO_TAIL_SILENCE_DURATION', '0.005'))
+DEFAULT_TAIL_SILENCE_DURATION = float(os.getenv('AUDIO_TAIL_SILENCE_DURATION', '0.02'))
 DEFAULT_TAIL_SILENCE_THRESHOLD_DB = float(os.getenv('AUDIO_TAIL_SILENCE_THRESHOLD_DB', '-50'))
-DEFAULT_TAIL_SILENCE_LEAVE = float(os.getenv('AUDIO_TAIL_LEAVE_SILENCE', '0.0'))
+DEFAULT_TAIL_SILENCE_LEAVE = float(os.getenv('AUDIO_TAIL_LEAVE_SILENCE', '0.02'))
 
 from shutil import which
 
