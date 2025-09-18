@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 
 TICKS_PER_SECOND = 10_000_000  # Azure edge-tts reports offsets/durations in 100ns units
-DEFAULT_SEGMENT_MAX_GAP = float(os.getenv('SUBTITLE_MAX_GAP', '0.1'))
+DEFAULT_SEGMENT_MAX_GAP = float(os.getenv('SUBTITLE_MAX_GAP', '0.4'))
 
 from utils import DETAILED_ERROR_LOGGING
 from config import DEFAULT_CONFIGS
