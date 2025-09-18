@@ -196,8 +196,10 @@ def _trim_trailing_silence(audio_path: str, response_format: str,
         codec_args = ['-codec:a', 'pcm_s16le']
 
     silence_filter = (
-        f"silenceremove=start_periods=0:stop_periods=1:"
-        f"stop_duration={stop_duration}:stop_threshold={stop_threshold_db}dB"
+        "areverse,"  # Reverse audio so trailing silence becomes leading silence
+        f"silenceremove=start_periods=1:start_duration={stop_duration}:"
+        f"start_threshold={stop_threshold_db}dB,"  # Remove what is now leading silence
+        "areverse"  # Reverse back to original order
     )
 
     command = [
