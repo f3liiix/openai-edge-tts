@@ -76,7 +76,7 @@ DETAILED_ERROR_LOGGING=True
 # Optional subtitle segmentation tuning (seconds)
 # SUBTITLE_MAX_GAP=0.4
 # Optional audio tail trimming (seconds / dB)
-# AUDIO_TAIL_SILENCE_DURATION=0.01
+# AUDIO_TAIL_SILENCE_DURATION=0.05
 # AUDIO_TAIL_SILENCE_THRESHOLD_DB=-40
 ```
 
@@ -248,7 +248,7 @@ Generates audio from the input text. Available parameters:
 - **return_metadata** (boolean): Forces a JSON response containing base64 audio even if no metadata options are enabled.
 - **response_mode** (string): Set to `"json"` to force a JSON payload with base64 audio data; defaults to `"binary"`.
 - **segment_max_gap** (number): Silence gap (seconds) that triggers a new subtitle segment. Default: `0.4` seconds.
-- **AUDIO_TAIL_SILENCE_DURATION** (env, number): Length (seconds) of trailing silence to tolerate before trimming. Default: `0.01` seconds.
+- **AUDIO_TAIL_SILENCE_DURATION** (env, number): Length (seconds) of trailing silence to tolerate before trimming. Default: `0.05` seconds.
 - **AUDIO_TAIL_SILENCE_THRESHOLD_DB** (env, number): Threshold in dBFS to detect silence when trimming audio tails. Default: `-40` dB.
 
 **Note:** The API is fully compatible with OpenAI's TTS API specification. The `instructions` parameter (for fine-tuning voice characteristics) is not currently supported, but all other parameters work identically to OpenAI's implementation.
