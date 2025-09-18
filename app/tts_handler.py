@@ -233,6 +233,34 @@ def _trim_trailing_silence(audio_path: str, response_format: str,
             print(f"[trim] Failed to replace original audio after trimming {audio_path}: {exc}")
 
 
+def _probe_audio_duration(audio_path: str) -> Optional[float]:
+    """Probe audio duration using ffprobe if available."""
+    if which('ffprobe') is None:
+        return None
+
+    command = [
+        'ffprobe',
+        '-v', 'error',
+        '-select_streams', 'a:0',
+        '-show_entries', 'stream=duration',
+        '-of', 'default=noprint_wrappers=1:nokey=1',
+        audio_path,
+    ]
+
+    try:
+        completed = subprocess.run(
+            command,
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        duration_str = completed.stdout.decode('utf-8', 'ignore').strip().splitlines()[0]
+        duration = float(duration_str)
+        return duration if duration >= 0 else None
+    except (subprocess.CalledProcessError, ValueError, IndexError):
+        return None
+
+
 def _format_srt_timestamp(total_seconds: float) -> str:
     hours = int(total_seconds // 3600)
     minutes = int((total_seconds % 3600) // 60)
@@ -294,20 +322,67 @@ def _subtitle_from_segments(segments: List[Dict[str, float]], subtitle_format: O
     return "\n".join(lines).strip() + "\n"
 
 
+def _clip_word_boundaries_to_duration(word_boundaries: List[Dict[str, float]],
+                                      duration: float) -> List[Dict[str, float]]:
+    clipped: List[Dict[str, float]] = []
+    for boundary in word_boundaries:
+        start = boundary["start"]
+        end = boundary["end"]
+        if start >= duration:
+            continue
+        new_end = min(end, duration)
+        new_boundary = dict(boundary)
+        new_boundary["start"] = start
+        new_boundary["end"] = new_end
+        new_boundary["offset_ticks"] = int(round(start * TICKS_PER_SECOND))
+        new_boundary["duration_ticks"] = max(
+            0,
+            int(round((new_end - start) * TICKS_PER_SECOND))
+        )
+        clipped.append(new_boundary)
+    return clipped
+
+
+def _clip_segments_to_duration(segments: List[Dict[str, float]],
+                               duration: float) -> List[Dict[str, float]]:
+    clipped: List[Dict[str, float]] = []
+    for segment in segments:
+        start = segment["start"]
+        if start >= duration:
+            continue
+        end = min(segment["end"], duration)
+        if end - start <= 0:
+            continue
+        clipped.append({
+            "text": segment["text"],
+            "start": start,
+            "end": end,
+        })
+    return clipped
+
+
 def _build_audio_result(audio_path: str,
                         include_word_boundaries: bool,
                         subtitle_format: Optional[str],
                         word_boundary_payloads: List[Dict[str, object]],
-                        segment_max_gap: float) -> Dict[str, object]:
+                        segment_max_gap: float,
+                        audio_duration: Optional[float]) -> Dict[str, object]:
     metadata = None
     segments: Optional[List[Dict[str, float]]] = None
     subtitle_payload = None
 
     if include_word_boundaries and word_boundary_payloads:
         metadata = _normalize_word_boundaries(word_boundary_payloads)
+        if audio_duration is not None:
+            metadata = _clip_word_boundaries_to_duration(metadata, audio_duration)
         segments = _segments_from_word_boundaries(metadata, segment_max_gap)
-    if subtitle_format and segments:
-        subtitle_payload = _subtitle_from_segments(segments, subtitle_format)
+    if segments and audio_duration is not None:
+        segments = _clip_segments_to_duration(segments, audio_duration)
+    if segments:
+        if subtitle_format:
+            subtitle_payload = _subtitle_from_segments(segments, subtitle_format)
+    else:
+        segments = None
 
     return {
         "audio_path": audio_path,
@@ -383,12 +458,14 @@ async def _generate_audio(text, voice, response_format, speed, include_word_boun
             temp_mp3_path,
             response_format,
         )
+        audio_duration = _probe_audio_duration(temp_mp3_path)
         return _build_audio_result(
             temp_mp3_path,
             include_word_boundaries,
             subtitle_format,
             word_boundary_payloads,
             segment_max_gap,
+            audio_duration,
         )
 
     # Check if FFmpeg is installed
@@ -398,12 +475,14 @@ async def _generate_audio(text, voice, response_format, speed, include_word_boun
             temp_mp3_path,
             response_format,
         )
+        audio_duration = _probe_audio_duration(temp_mp3_path)
         return _build_audio_result(
             temp_mp3_path,
             include_word_boundaries,
             subtitle_format,
             word_boundary_payloads,
             segment_max_gap,
+            audio_duration,
         )
 
     # Create a new temporary file for the converted output
@@ -464,12 +543,15 @@ async def _generate_audio(text, voice, response_format, speed, include_word_boun
         response_format,
     )
 
+    audio_duration = _probe_audio_duration(converted_path)
+
     return _build_audio_result(
         converted_path,
         include_word_boundaries,
         subtitle_format,
         word_boundary_payloads,
         segment_max_gap,
+        audio_duration,
     )
 
 
