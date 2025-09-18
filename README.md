@@ -73,7 +73,7 @@ REMOVE_FILTER=False
 EXPAND_API=True
 DETAILED_ERROR_LOGGING=True
 # Optional subtitle segmentation tuning (seconds)
-# SUBTITLE_MAX_GAP=0.4
+# SUBTITLE_MAX_GAP=0.1
 ```
 
 Or, copy the default `.env.example` with the following:
@@ -243,7 +243,7 @@ Generates audio from the input text. Available parameters:
 - **subtitle_format** (string): When set to `"srt"`, `"vtt"`, or `"webvtt"`, generates subtitle text aligned with the audio. Automatically implies `include_word_boundaries`.
 - **return_metadata** (boolean): Forces a JSON response containing base64 audio even if no metadata options are enabled.
 - **response_mode** (string): Set to `"json"` to force a JSON payload with base64 audio data; defaults to `"binary"`.
-- **segment_max_gap** (number): Silence gap (seconds) that triggers a new subtitle segment. Default: `0.4` seconds.
+- **segment_max_gap** (number): Silence gap (seconds) that triggers a new subtitle segment. Default: `0.1` seconds.
 
 **Note:** The API is fully compatible with OpenAI's TTS API specification. The `instructions` parameter (for fine-tuning voice characteristics) is not currently supported, but all other parameters work identically to OpenAI's implementation.
 
@@ -346,7 +346,7 @@ curl -X POST http://localhost:5050/v1/audio/speech \
     "response_format": "mp3",
     "include_word_boundaries": true,
     "subtitle_format": "srt",
-    "segment_max_gap": 0.4
+    "segment_max_gap": 0.1
   }'
 ```
 
