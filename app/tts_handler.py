@@ -13,6 +13,8 @@ DEFAULT_SEGMENT_MAX_GAP = float(os.getenv('SUBTITLE_MAX_GAP', '0.4'))
 DEFAULT_TAIL_SILENCE_DURATION = float(os.getenv('AUDIO_TAIL_SILENCE_DURATION', '0.3'))
 DEFAULT_TAIL_SILENCE_THRESHOLD_DB = float(os.getenv('AUDIO_TAIL_SILENCE_THRESHOLD_DB', '-50'))
 
+from shutil import which
+
 from utils import DETAILED_ERROR_LOGGING
 from config import DEFAULT_CONFIGS
 
@@ -42,11 +44,7 @@ model_data = [
 
 def is_ffmpeg_installed():
     """Check if FFmpeg is installed and accessible."""
-    try:
-        subprocess.run(['ffmpeg', '-version'], check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        return True
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        return False
+    return which('ffmpeg') is not None
 
 async def _generate_audio_stream(text, voice, speed):
     """Generate streaming TTS audio using edge-tts."""
