@@ -10,6 +10,8 @@ from typing import Dict, Iterable, List, Optional
 
 TICKS_PER_SECOND = 10_000_000  # Azure edge-tts reports offsets/durations in 100ns units
 DEFAULT_SEGMENT_MAX_GAP = float(os.getenv('SUBTITLE_MAX_GAP', '0.4'))
+DEFAULT_TAIL_SILENCE_DURATION = float(os.getenv('AUDIO_TAIL_SILENCE_DURATION', '0.3'))
+DEFAULT_TAIL_SILENCE_THRESHOLD_DB = float(os.getenv('AUDIO_TAIL_SILENCE_THRESHOLD_DB', '-50'))
 
 from utils import DETAILED_ERROR_LOGGING
 from config import DEFAULT_CONFIGS
@@ -165,6 +167,58 @@ def _segments_from_word_boundaries(word_boundaries: List[Dict[str, float]],
     return segments
 
 
+def _trim_trailing_silence(audio_path: str, response_format: str,
+                           stop_duration: float = DEFAULT_TAIL_SILENCE_DURATION,
+                           stop_threshold_db: float = DEFAULT_TAIL_SILENCE_THRESHOLD_DB) -> None:
+    """Use ffmpeg to remove trailing silence from an audio file in-place."""
+    if not is_ffmpeg_installed() or stop_duration <= 0:
+        return
+
+    suffix = Path(audio_path).suffix or f".{response_format}"
+    tmp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    trimmed_path = tmp_file.name
+    tmp_file.close()
+
+    codec_map = {
+        'mp3': ['-codec:a', 'libmp3lame', '-b:a', '192k'],
+        'aac': ['-codec:a', 'aac', '-b:a', '192k'],
+        'opus': ['-codec:a', 'libopus'],
+        'flac': ['-codec:a', 'flac'],
+        'wav': ['-codec:a', 'pcm_s16le'],
+    }
+
+    codec_args = codec_map.get(response_format, ['-codec:a', 'copy'])
+    # Using a filter requires re-encoding; fall back to PCM if codec copy is selected
+    if codec_args == ['-codec:a', 'copy']:
+        codec_args = ['-codec:a', 'pcm_s16le']
+
+    silence_filter = (
+        f"silenceremove=start_periods=0:stop_periods=1:"
+        f"stop_duration={stop_duration}:stop_threshold={stop_threshold_db}dB"
+    )
+
+    command = [
+        'ffmpeg',
+        '-y',
+        '-i', audio_path,
+        '-af', silence_filter,
+        *codec_args,
+        trimmed_path,
+    ]
+
+    try:
+        subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    except subprocess.CalledProcessError:
+        Path(trimmed_path).unlink(missing_ok=True)
+        return
+
+    try:
+        Path(trimmed_path).replace(audio_path)
+    except OSError:
+        # If replacing fails, leave the original file untouched
+        Path(trimmed_path).unlink(missing_ok=True)
+
+
 def _format_srt_timestamp(total_seconds: float) -> str:
     hours = int(total_seconds // 3600)
     minutes = int((total_seconds % 3600) // 60)
@@ -311,6 +365,10 @@ async def _generate_audio(text, voice, response_format, speed, include_word_boun
 
     # If the requested format is mp3, return the generated file directly
     if response_format == "mp3":
+        _trim_trailing_silence(
+            temp_mp3_path,
+            response_format,
+        )
         return _build_audio_result(
             temp_mp3_path,
             include_word_boundaries,
@@ -322,6 +380,10 @@ async def _generate_audio(text, voice, response_format, speed, include_word_boun
     # Check if FFmpeg is installed
     if not is_ffmpeg_installed():
         print("FFmpeg is not available. Returning unmodified mp3 file.")
+        _trim_trailing_silence(
+            temp_mp3_path,
+            response_format,
+        )
         return _build_audio_result(
             temp_mp3_path,
             include_word_boundaries,
@@ -382,6 +444,11 @@ async def _generate_audio(text, voice, response_format, speed, include_word_boun
 
     # Clean up the original temporary file (original mp3) as it's now converted
     Path(temp_mp3_path).unlink(missing_ok=True)
+
+    _trim_trailing_silence(
+        converted_path,
+        response_format,
+    )
 
     return _build_audio_result(
         converted_path,
