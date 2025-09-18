@@ -169,7 +169,12 @@ def _trim_trailing_silence(audio_path: str, response_format: str,
                            stop_duration: float = DEFAULT_TAIL_SILENCE_DURATION,
                            stop_threshold_db: float = DEFAULT_TAIL_SILENCE_THRESHOLD_DB) -> None:
     """Use ffmpeg to remove trailing silence from an audio file in-place."""
-    if not is_ffmpeg_installed() or stop_duration <= 0:
+    if stop_duration <= 0:
+        return
+
+    if not is_ffmpeg_installed():
+        if DETAILED_ERROR_LOGGING:
+            print("[trim] ffmpeg not available; skipping tail silence removal")
         return
 
     suffix = Path(audio_path).suffix or f".{response_format}"
@@ -206,15 +211,21 @@ def _trim_trailing_silence(audio_path: str, response_format: str,
 
     try:
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    except subprocess.CalledProcessError:
+        if DETAILED_ERROR_LOGGING:
+            print(f"[trim] Removed trailing silence from {audio_path}")
+    except subprocess.CalledProcessError as exc:
         Path(trimmed_path).unlink(missing_ok=True)
+        if DETAILED_ERROR_LOGGING:
+            print(f"[trim] ffmpeg failed for {audio_path}: {exc}")
         return
 
     try:
         Path(trimmed_path).replace(audio_path)
-    except OSError:
+    except OSError as exc:
         # If replacing fails, leave the original file untouched
         Path(trimmed_path).unlink(missing_ok=True)
+        if DETAILED_ERROR_LOGGING:
+            print(f"[trim] Failed to replace original audio after trimming {audio_path}: {exc}")
 
 
 def _format_srt_timestamp(total_seconds: float) -> str:
