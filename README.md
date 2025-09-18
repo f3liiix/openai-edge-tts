@@ -78,7 +78,7 @@ DETAILED_ERROR_LOGGING=True
 # Optional audio tail trimming (seconds / dB)
 # AUDIO_TAIL_SILENCE_DURATION=0.02
 # AUDIO_TAIL_SILENCE_THRESHOLD_DB=-50
-# AUDIO_TAIL_LEAVE_SILENCE=0.5
+# AUDIO_TAIL_LEAVE_SILENCE=0.25
 ```
 
 Or, copy the default `.env.example` with the following:
@@ -251,7 +251,7 @@ Generates audio from the input text. Available parameters:
 - **segment_max_gap** (number): Silence gap (seconds) that triggers a new subtitle segment. Default: `0.4` seconds.
 - **AUDIO_TAIL_SILENCE_DURATION** (env, number): Length (seconds) of trailing silence to tolerate before trimming. Default: `0.02` seconds.
 - **AUDIO_TAIL_SILENCE_THRESHOLD_DB** (env, number): Threshold in dBFS to detect silence when trimming audio tails. Default: `-50` dB.
-- **AUDIO_TAIL_LEAVE_SILENCE** (env, number): Amount of silence (seconds) to retain after trimming. Default: `0.5` seconds.
+- **AUDIO_TAIL_LEAVE_SILENCE** (env, number): Amount of silence (seconds) to retain after trimming. Default: `0.25` seconds.
 
 **Note:** The API is fully compatible with OpenAI's TTS API specification. The `instructions` parameter (for fine-tuning voice characteristics) is not currently supported, but all other parameters work identically to OpenAI's implementation.
 
