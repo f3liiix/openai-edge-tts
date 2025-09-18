@@ -12,6 +12,7 @@ TICKS_PER_SECOND = 10_000_000  # Azure edge-tts reports offsets/durations in 100
 DEFAULT_SEGMENT_MAX_GAP = float(os.getenv('SUBTITLE_MAX_GAP', '0.4'))
 DEFAULT_TAIL_SILENCE_DURATION = float(os.getenv('AUDIO_TAIL_SILENCE_DURATION', '0.005'))
 DEFAULT_TAIL_SILENCE_THRESHOLD_DB = float(os.getenv('AUDIO_TAIL_SILENCE_THRESHOLD_DB', '-50'))
+DEFAULT_TAIL_SILENCE_LEAVE = float(os.getenv('AUDIO_TAIL_LEAVE_SILENCE', '0.0'))
 
 from shutil import which
 
@@ -167,7 +168,8 @@ def _segments_from_word_boundaries(word_boundaries: List[Dict[str, float]],
 
 def _trim_trailing_silence(audio_path: str, response_format: str,
                            stop_duration: float = DEFAULT_TAIL_SILENCE_DURATION,
-                           stop_threshold_db: float = DEFAULT_TAIL_SILENCE_THRESHOLD_DB) -> None:
+                           stop_threshold_db: float = DEFAULT_TAIL_SILENCE_THRESHOLD_DB,
+                           leave_silence: float = DEFAULT_TAIL_SILENCE_LEAVE) -> None:
     """Use ffmpeg to remove trailing silence from an audio file in-place."""
     if stop_duration <= 0:
         return
@@ -198,7 +200,7 @@ def _trim_trailing_silence(audio_path: str, response_format: str,
     silence_filter = (
         "areverse,"  # Reverse audio so trailing silence becomes leading silence
         f"silenceremove=start_periods=1:start_duration={stop_duration}:"
-        f"start_threshold={stop_threshold_db}dB,"  # Remove what is now leading silence
+        f"start_threshold={stop_threshold_db}dB:leave_silence={max(leave_silence, 0)},"
         "areverse"  # Reverse back to original order
     )
 
