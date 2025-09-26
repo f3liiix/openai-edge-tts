@@ -386,6 +386,7 @@ def _build_audio_result(audio_path: str,
 
     return {
         "audio_path": audio_path,
+        "audio_duration": audio_duration,
         "word_boundaries": metadata,
         "subtitle_format": subtitle_format if subtitle_payload else None,
         "subtitle": subtitle_payload,

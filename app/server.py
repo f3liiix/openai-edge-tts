@@ -192,6 +192,8 @@ def text_to_speech():
                     response_payload["subtitle"] = subtitle_text
                     response_payload["subtitle_format"] = metadata_payload.get("subtitle_format") or subtitle_format
 
+                response_payload["audio_duration_seconds"] = metadata_payload.get("audio_duration")
+
             return jsonify(response_payload)
             
     except Exception as e:
