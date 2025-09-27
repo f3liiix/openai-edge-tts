@@ -1,3 +1,4 @@
+# System dependency (install separately): ffmpeg
 flask
 gevent
 python-dotenv

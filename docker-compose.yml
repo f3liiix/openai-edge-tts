@@ -5,7 +5,7 @@ services:
     build:
       context: .
       args:
-        INSTALL_FFMPEG: ${INSTALL_FFMPEG_ARG:-false} # Controlled by env var or defaults to false
+        INSTALL_FFMPEG: ${INSTALL_FFMPEG_ARG:-true} # 默认安装 ffmpeg，可通过环境变量关闭
     ports:
       - '${PORT:-5050}:5050'
     env_file:

@@ -46,7 +46,7 @@ _(Docker required, obviously)_
 
 - **Docker** (recommended): Docker and Docker Compose for containerized setup.
 - **Python** (optional): For local development, install dependencies in `requirements.txt`.
-- **ffmpeg** (optional): Required for audio format conversion. Optional if sticking to mp3.
+- **ffmpeg**: Docker 镜像构建时默认会安装；若在本机运行，需要自行安装以支持格式转换与静音裁剪。
 
 ### Installation
 
@@ -106,24 +106,26 @@ docker compose up -d
 
 </summary>
 
-By default, `docker compose up --build` creates a minimal image _without_ `ffmpeg`. If you're building locally (after cloning this repository) and need `ffmpeg` for audio format conversions (beyond MP3), you can include it in the build.
+默认情况下，`docker compose up --build` 会安装 FFmpeg，适用于需要多种音频格式或静音裁剪的场景。
 
-This is controlled by the `INSTALL_FFMPEG_ARG` build argument. Set this environment variable to `true` in one of these ways:
+如果想减小镜像体积而跳过 FFmpeg，可将 `INSTALL_FFMPEG_ARG` 构建参数设置为 `false`，例如：
 
-1.  **Prefixing the command:**
+1.  **在命令前加环境变量：**
     ```bash
-    INSTALL_FFMPEG_ARG=true docker compose up --build
+    INSTALL_FFMPEG_ARG=false docker compose up --build
     ```
-2.  **Adding to your `.env` file:**
-    Add this line to the `.env` file in the project root:
+2.  **写入 `.env` 文件：**
     ```env
-    INSTALL_FFMPEG_ARG=true
+    INSTALL_FFMPEG_ARG=false
     ```
-    Then, run `docker compose up --build`.
-3.  **Exporting in your shell environment:**
-    Add `export INSTALL_FFMPEG_ARG=true` to your shell configuration (e.g., `~/.zshrc`, `~/.bashrc`) and reload your shell. Then `docker compose up --build` will use it.
+    随后执行 `docker compose up --build` 即可。
+3.  **在 Shell 中导出：**
+    ```bash
+    export INSTALL_FFMPEG_ARG=false
+    docker compose up --build
+    ```
 
-This is for local builds. For pre-built Docker Hub images, add the `latest-ffmpeg` tag to the version
+对于预构建的 Docker Hub 镜像，如需保留 FFmpeg，请使用 `latest-ffmpeg` 标签：
 
 ```bash
 docker run -d -p 5050:5050 -e API_KEY=your_api_key_here -e PORT=5050 travisvn/openai-edge-tts:latest-ffmpeg

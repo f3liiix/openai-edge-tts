@@ -1,11 +1,11 @@
 FROM python:3.12-slim
 
-ARG INSTALL_FFMPEG=false
+ARG INSTALL_FFMPEG=true
 WORKDIR /app
 
-# Install ffmpeg conditionally
+# Install ffmpeg by default (can disable via build-arg)
 RUN if [ "$INSTALL_FFMPEG" = "true" ]; then \
-    apt-get update && apt-get install -y ffmpeg && rm -rf /var/lib/apt/lists/*; \
+    apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*; \
     fi
 
 # Copy requirements and install them
