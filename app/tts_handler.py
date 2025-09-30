@@ -7,6 +7,10 @@ import subprocess
 import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
+from shutil import which
+
+from config import DEFAULT_CONFIGS
+from utils import DETAILED_ERROR_LOGGING, getenv_bool
 
 TICKS_PER_SECOND = 10_000_000  # Azure edge-tts reports offsets/durations in 100ns units
 DEFAULT_SEGMENT_MAX_GAP = float(os.getenv('SUBTITLE_MAX_GAP', '0.4'))
@@ -21,11 +25,6 @@ AUDIO_COMPRESS_ATTACK_MS = max(float(os.getenv('AUDIO_COMPRESS_ATTACK_MS', '5'))
 AUDIO_COMPRESS_RELEASE_MS = max(float(os.getenv('AUDIO_COMPRESS_RELEASE_MS', '50')), 1.0)
 AUDIO_LIMITER_THRESHOLD_DB = float(os.getenv('AUDIO_LIMITER_THRESHOLD_DB', '-1'))
 AUDIO_MAKEUP_GAIN_DB = float(os.getenv('AUDIO_MAKEUP_GAIN_DB', '0'))
-
-from shutil import which
-
-from utils import DETAILED_ERROR_LOGGING, getenv_bool
-from config import DEFAULT_CONFIGS
 
 # Language default (environment variable)
 DEFAULT_LANGUAGE = os.getenv('DEFAULT_LANGUAGE', DEFAULT_CONFIGS["DEFAULT_LANGUAGE"])
