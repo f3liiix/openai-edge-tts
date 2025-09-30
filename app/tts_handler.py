@@ -14,9 +14,17 @@ DEFAULT_TAIL_SILENCE_DURATION = float(os.getenv('AUDIO_TAIL_SILENCE_DURATION', '
 DEFAULT_TAIL_SILENCE_THRESHOLD_DB = float(os.getenv('AUDIO_TAIL_SILENCE_THRESHOLD_DB', '-50'))
 DEFAULT_TAIL_SILENCE_LEAVE = float(os.getenv('AUDIO_TAIL_LEAVE_SILENCE', '0.25'))
 
+AUDIO_DRC_ENABLED = getenv_bool('AUDIO_ENABLE_DYNAMIC_RANGE_CONTROL', False)
+AUDIO_COMPRESS_THRESHOLD_DB = float(os.getenv('AUDIO_COMPRESS_THRESHOLD_DB', '-20'))
+AUDIO_COMPRESS_RATIO = float(os.getenv('AUDIO_COMPRESS_RATIO', '3'))
+AUDIO_COMPRESS_ATTACK_MS = max(float(os.getenv('AUDIO_COMPRESS_ATTACK_MS', '5')), 0.1)
+AUDIO_COMPRESS_RELEASE_MS = max(float(os.getenv('AUDIO_COMPRESS_RELEASE_MS', '50')), 1.0)
+AUDIO_LIMITER_THRESHOLD_DB = float(os.getenv('AUDIO_LIMITER_THRESHOLD_DB', '-1'))
+AUDIO_MAKEUP_GAIN_DB = float(os.getenv('AUDIO_MAKEUP_GAIN_DB', '0'))
+
 from shutil import which
 
-from utils import DETAILED_ERROR_LOGGING
+from utils import DETAILED_ERROR_LOGGING, getenv_bool
 from config import DEFAULT_CONFIGS
 
 # Language default (environment variable)
@@ -170,13 +178,17 @@ def _trim_trailing_silence(audio_path: str, response_format: str,
                            stop_duration: float = DEFAULT_TAIL_SILENCE_DURATION,
                            stop_threshold_db: float = DEFAULT_TAIL_SILENCE_THRESHOLD_DB,
                            leave_silence: float = DEFAULT_TAIL_SILENCE_LEAVE) -> None:
-    """Use ffmpeg to remove trailing silence from an audio file in-place."""
-    if stop_duration <= 0:
+    """Use ffmpeg to post-process audio (dynamic range + trailing silence)."""
+    should_trim_silence = stop_duration > 0
+    should_apply_drc = AUDIO_DRC_ENABLED
+    should_adjust_gain = AUDIO_MAKEUP_GAIN_DB != 0
+
+    if not (should_trim_silence or should_apply_drc or should_adjust_gain):
         return
 
     if not is_ffmpeg_installed():
         if DETAILED_ERROR_LOGGING:
-            print("[trim] ffmpeg not available; skipping tail silence removal")
+            print("[trim] ffmpeg not available; skipping audio post-processing")
         return
 
     suffix = Path(audio_path).suffix or f".{response_format}"
@@ -193,23 +205,48 @@ def _trim_trailing_silence(audio_path: str, response_format: str,
     }
 
     codec_args = codec_map.get(response_format, ['-codec:a', 'copy'])
-    # Using a filter requires re-encoding; fall back to PCM if codec copy is selected
+    # Using filters requires re-encoding; fall back to PCM if codec copy is selected
     if codec_args == ['-codec:a', 'copy']:
         codec_args = ['-codec:a', 'pcm_s16le']
 
-    leave = max(leave_silence, 0)
-    silence_filter = (
-        "areverse,"  # Reverse audio so trailing silence becomes leading silence
-        f"silenceremove=start_periods=1:start_duration={stop_duration}:"
-        f"start_threshold={stop_threshold_db}dB:start_silence={leave},"
-        "areverse"  # Reverse back to original order
-    )
+    filters: List[str] = []
+
+    if should_apply_drc:
+        ratio = max(AUDIO_COMPRESS_RATIO, 1.0)
+        compressor = (
+            "acompressor="
+            f"threshold={AUDIO_COMPRESS_THRESHOLD_DB}dB:"
+            f"ratio={ratio}:"
+            f"attack={AUDIO_COMPRESS_ATTACK_MS}:"
+            f"release={AUDIO_COMPRESS_RELEASE_MS}"
+        )
+        filters.append(compressor)
+        limiter = f"alimiter=limit={AUDIO_LIMITER_THRESHOLD_DB}dB"
+        filters.append(limiter)
+
+    if should_adjust_gain:
+        filters.append(f"volume={AUDIO_MAKEUP_GAIN_DB}dB")
+
+    if should_trim_silence:
+        leave = max(leave_silence, 0)
+        filters.extend([
+            "areverse",
+            (
+                "silenceremove="
+                f"start_periods=1:start_duration={stop_duration}:"
+                f"start_threshold={stop_threshold_db}dB:start_silence={leave}"
+            ),
+            "areverse",
+        ])
+
+    if not filters:
+        return
 
     command = [
         'ffmpeg',
         '-y',
         '-i', audio_path,
-        '-af', silence_filter,
+        '-af', ",".join(filters),
         *codec_args,
         trimmed_path,
     ]
@@ -217,7 +254,7 @@ def _trim_trailing_silence(audio_path: str, response_format: str,
     try:
         subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         if DETAILED_ERROR_LOGGING:
-            print(f"[trim] Removed trailing silence from {audio_path}")
+            print(f"[trim] Post-processed audio for {audio_path}")
     except subprocess.CalledProcessError as exc:
         Path(trimmed_path).unlink(missing_ok=True)
         if DETAILED_ERROR_LOGGING:
