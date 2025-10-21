@@ -3,10 +3,14 @@ FROM python:3.12-slim
 ARG INSTALL_FFMPEG=true
 WORKDIR /app
 
-# Install ffmpeg by default (can disable via build-arg)
-RUN if [ "$INSTALL_FFMPEG" = "true" ]; then \
-    apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*; \
-    fi
+# Ensure CA certificates for outbound TLS and optionally ffmpeg
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates; \
+    if [ "$INSTALL_FFMPEG" = "true" ]; then \
+        apt-get install -y --no-install-recommends ffmpeg; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install them
 COPY requirements.txt /app

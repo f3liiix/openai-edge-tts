@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 from shutil import which
 import time
+import threading
 
 from config import DEFAULT_CONFIGS
 from utils import DETAILED_ERROR_LOGGING, getenv_bool
@@ -30,6 +31,10 @@ AUDIO_MAKEUP_GAIN_DB = float(os.getenv('AUDIO_MAKEUP_GAIN_DB', '0'))
 
 # Language default (environment variable)
 DEFAULT_LANGUAGE = os.getenv('DEFAULT_LANGUAGE', DEFAULT_CONFIGS["DEFAULT_LANGUAGE"])
+
+# Global concurrency limit to protect upstream service
+MAX_CONCURRENT_TTS = int(os.getenv('MAX_CONCURRENT_TTS', '4'))
+_TTS_CONCURRENCY_GUARD = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_TTS))
 
 # OpenAI voice names mapped to edge-tts equivalents
 voice_mapping = {
@@ -142,14 +147,20 @@ async def _generate_audio_stream(text, voice, speed):
         safe_voice = _select_fallback_voice_quick('en-US-AriaNeural')
         if DETAILED_ERROR_LOGGING:
             print(f"[tts] NoAudioReceived on streaming; retrying once with voice='{safe_voice}', rate='+0%'")
+        # brief backoff to avoid hammering upstream
+        await asyncio.sleep(0.3)
         communicator = edge_tts.Communicate(text=text, voice=safe_voice, rate="+0%")
         async for chunk in communicator.stream():
             if chunk["type"] == "audio":
                 yield chunk["data"]
 
 def generate_speech_stream(text, voice, speed=1.0):
-    """Generate streaming speech audio (synchronous wrapper)."""
-    return asyncio.run(_generate_audio_stream(text, voice, speed))
+    """Generate streaming speech audio (synchronous wrapper with concurrency guard)."""
+    _TTS_CONCURRENCY_GUARD.acquire()
+    try:
+        return asyncio.run(_generate_audio_stream(text, voice, speed))
+    finally:
+        _TTS_CONCURRENCY_GUARD.release()
 
 def _coerce_ticks(value: Optional[int]) -> int:
     if value is None:
@@ -591,6 +602,7 @@ async def _generate_audio(text, voice, response_format, speed, include_word_boun
         temp_mp3_path_retry = temp_retry_obj.name
         temp_retry_obj.close()
         temp_mp3_path = temp_mp3_path_retry  # type: ignore  # rebind for subsequent code
+        await asyncio.sleep(0.3)
         word_boundary_payloads = await _attempt_stream_to_file(safe_voice, safe_rate, safe_boundary)
 
     temp_mp3_file_obj.close() # Explicitly close our file object for the initial mp3
@@ -702,17 +714,21 @@ def generate_speech(text, voice, response_format, speed=1.0, *, include_word_bou
                     subtitle_format: Optional[str] = None,
                     segment_max_gap: Optional[float] = None):
     segment_max_gap = segment_max_gap if segment_max_gap is not None else DEFAULT_SEGMENT_MAX_GAP
-    result = asyncio.run(
-        _generate_audio(
-            text,
-            voice,
-            response_format,
-            speed,
-            include_word_boundaries=include_word_boundaries or bool(subtitle_format),
-            subtitle_format=subtitle_format,
-            segment_max_gap=segment_max_gap,
+    _TTS_CONCURRENCY_GUARD.acquire()
+    try:
+        result = asyncio.run(
+            _generate_audio(
+                text,
+                voice,
+                response_format,
+                speed,
+                include_word_boundaries=include_word_boundaries or bool(subtitle_format),
+                subtitle_format=subtitle_format,
+                segment_max_gap=segment_max_gap,
+            )
         )
-    )
+    finally:
+        _TTS_CONCURRENCY_GUARD.release()
 
     if isinstance(result, str):
         # Backwards compatibility: when _generate_audio returned a path (mp3 without metadata)
