@@ -1,6 +1,7 @@
 # tts_handler.py
 
 import edge_tts
+from edge_tts.exceptions import NoAudioReceived
 import asyncio
 import tempfile
 import subprocess
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional
 from shutil import which
+import time
 
 from config import DEFAULT_CONFIGS
 from utils import DETAILED_ERROR_LOGGING, getenv_bool
@@ -44,6 +46,69 @@ voice_mapping = {
     'verse': 'en-US-BrianNeural',
 }
 
+# Simple in-memory cache for available voice short names
+_VOICE_CACHE_TTL_SECONDS = 300
+_voice_cache_expires_at: float = 0.0
+_voice_shortnames_cached: Optional[set] = None
+
+def _refresh_voice_cache_if_needed() -> None:
+    global _voice_cache_expires_at, _voice_shortnames_cached
+    now = time.time()
+    if _voice_shortnames_cached is not None and now < _voice_cache_expires_at:
+        return
+    try:
+        # Use existing helper to fetch all voices (sync wrapper over async)
+        voices = get_voices('all')
+        _voice_shortnames_cached = {v.get('name') for v in voices if isinstance(v, dict) and v.get('name')}
+        _voice_cache_expires_at = now + _VOICE_CACHE_TTL_SECONDS
+    except Exception as exc:
+        # On failure, keep old cache (if any) and shorten TTL to retry sooner
+        if DETAILED_ERROR_LOGGING:
+            print(f"[voice-cache] Failed to refresh voice list: {exc}")
+        _voice_cache_expires_at = now + 30
+
+def _is_supported_voice(voice_name: str) -> bool:
+    if not voice_name:
+        return False
+    _refresh_voice_cache_if_needed()
+    return bool(_voice_shortnames_cached and voice_name in _voice_shortnames_cached)
+
+def _select_fallback_voice(preferred: Optional[str] = None) -> str:
+    candidates: List[str] = []
+    if preferred:
+        candidates.append(preferred)
+    # Prefer widely available, stable voices
+    candidates.extend([
+        'en-US-AriaNeural',
+        'en-US-JennyNeural',
+        DEFAULT_CONFIGS.get('DEFAULT_VOICE', 'en-US-AriaNeural'),
+    ])
+    _refresh_voice_cache_if_needed()
+    if _voice_shortnames_cached:
+        for name in candidates:
+            if name in _voice_shortnames_cached:
+                return name
+        # As a last resort, pick any cached voice deterministically
+        try:
+            return sorted(_voice_shortnames_cached)[0]
+        except Exception:
+            pass
+    # Absolute last resort
+    return 'en-US-AriaNeural'
+
+def _select_fallback_voice_quick(preferred: Optional[str] = None) -> str:
+    """Return a conservative fallback voice without querying remote voice lists.
+    Safe for use inside async contexts where calling asyncio.run is not allowed.
+    """
+    stable_defaults = {
+        'en-US-AriaNeural',
+        'en-US-JennyNeural',
+        'en-US-GuyNeural',
+    }
+    if preferred and preferred in stable_defaults:
+        return preferred
+    return 'en-US-AriaNeural'
+
 model_data = [
         {"id": "tts-1", "name": "Text-to-speech v1"},
         {"id": "tts-1-hd", "name": "Text-to-speech v1 HD"},
@@ -57,7 +122,7 @@ def is_ffmpeg_installed():
 async def _generate_audio_stream(text, voice, speed):
     """Generate streaming TTS audio using edge-tts."""
     # Determine if the voice is an OpenAI-compatible voice or a direct edge-tts voice
-    edge_tts_voice = voice_mapping.get(voice, voice)  # Use mapping if in OpenAI names, otherwise use as-is
+    edge_tts_voice = voice_mapping.get(voice, voice)
     
     # Convert speed to SSML rate format
     try:
@@ -67,12 +132,20 @@ async def _generate_audio_stream(text, voice, speed):
         speed_rate = "+0%"
     
     # Create the communicator for streaming
-    communicator = edge_tts.Communicate(text=text, voice=edge_tts_voice, rate=speed_rate)
-    
-    # Stream the audio data
-    async for chunk in communicator.stream():
-        if chunk["type"] == "audio":
-            yield chunk["data"]
+    try:
+        communicator = edge_tts.Communicate(text=text, voice=edge_tts_voice, rate=speed_rate)
+        async for chunk in communicator.stream():
+            if chunk["type"] == "audio":
+                yield chunk["data"]
+    except NoAudioReceived:
+        # One conservative retry with safe defaults
+        safe_voice = _select_fallback_voice_quick('en-US-AriaNeural')
+        if DETAILED_ERROR_LOGGING:
+            print(f"[tts] NoAudioReceived on streaming; retrying once with voice='{safe_voice}', rate='+0%'")
+        communicator = edge_tts.Communicate(text=text, voice=safe_voice, rate="+0%")
+        async for chunk in communicator.stream():
+            if chunk["type"] == "audio":
+                yield chunk["data"]
 
 def generate_speech_stream(text, voice, speed=1.0):
     """Generate streaming speech audio (synchronous wrapper)."""
@@ -455,7 +528,7 @@ async def _generate_audio(text, voice, response_format, speed, include_word_boun
                           segment_max_gap: float = DEFAULT_SEGMENT_MAX_GAP):
     """Generate TTS audio and optionally collect metadata and convert to different formats."""
     # Determine if the voice is an OpenAI-compatible voice or a direct edge-tts voice
-    edge_tts_voice = voice_mapping.get(voice, voice)  # Use mapping if in OpenAI names, otherwise use as-is
+    edge_tts_voice = voice_mapping.get(voice, voice)
 
     # Generate the TTS output in mp3 format first
     temp_mp3_file_obj = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
@@ -470,22 +543,55 @@ async def _generate_audio(text, voice, response_format, speed, include_word_boun
 
     boundary_mode = "WordBoundary" if include_word_boundaries else "SentenceBoundary"
 
-    communicator = edge_tts.Communicate(
-        text=text,
-        voice=edge_tts_voice,
-        rate=speed_rate,
-        boundary=boundary_mode,
-    )
+    async def _attempt_stream_to_file(v_name: str, rate_str: str, boundary: Optional[str]) -> List[Dict[str, object]]:
+        """Stream TTS to file, returning collected word boundary payloads."""
+        tmp_boundaries: List[Dict[str, object]] = []
+        communicator = edge_tts.Communicate(
+            text=text,
+            voice=v_name,
+            rate=rate_str,
+            boundary=boundary,
+        )
+        wrote_audio = False
+        with open(temp_mp3_path, "wb") as audio_file:
+            async for chunk in communicator.stream():
+                chunk_type = chunk.get("type") if isinstance(chunk, dict) else None
+                if chunk_type == "audio":
+                    data = chunk.get("data", b"")
+                    if data:
+                        audio_file.write(data)
+                        wrote_audio = True
+                elif chunk_type == "WordBoundary" and include_word_boundaries:
+                    tmp_boundaries.append(chunk)
+        if not wrote_audio:
+            # Align with upstream exception semantics to simplify calling code
+            raise NoAudioReceived("No audio was received during stream-to-file")
+        return tmp_boundaries
 
     word_boundary_payloads: List[Dict[str, object]] = []
-
-    with open(temp_mp3_path, "wb") as audio_file:
-        async for chunk in communicator.stream():
-            chunk_type = chunk.get("type") if isinstance(chunk, dict) else None
-            if chunk_type == "audio":
-                audio_file.write(chunk.get("data", b""))
-            elif chunk_type == "WordBoundary" and include_word_boundaries:
-                word_boundary_payloads.append(chunk)
+    try:
+        word_boundary_payloads = await _attempt_stream_to_file(edge_tts_voice, speed_rate, boundary_mode)
+    except NoAudioReceived as exc:
+        # Retry once with conservative parameters
+        safe_voice = _select_fallback_voice_quick('en-US-AriaNeural')
+        safe_rate = "+0%"
+        safe_boundary = "SentenceBoundary"
+        if DETAILED_ERROR_LOGGING:
+            print(
+                f"[tts] NoAudioReceived; retrying with voice='{safe_voice}', rate='{safe_rate}', boundary='{safe_boundary}'. "
+                f"Original voice='{edge_tts_voice}', rate='{speed_rate}', boundary='{boundary_mode}'."
+            )
+        # Ensure previous empty file is removed before retry to avoid confusion
+        try:
+            Path(temp_mp3_path).unlink(missing_ok=True)
+        except Exception:
+            pass
+        # Recreate a new temp file path for retry
+        temp_retry_obj = tempfile.NamedTemporaryFile(delete=False, suffix=".mp3")
+        temp_mp3_path_retry = temp_retry_obj.name
+        temp_retry_obj.close()
+        temp_mp3_path = temp_mp3_path_retry  # type: ignore  # rebind for subsequent code
+        word_boundary_payloads = await _attempt_stream_to_file(safe_voice, safe_rate, safe_boundary)
 
     temp_mp3_file_obj.close() # Explicitly close our file object for the initial mp3
 

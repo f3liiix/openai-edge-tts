@@ -77,14 +77,29 @@ def text_to_speech():
             return jsonify({"error": "Missing 'input' in request body"}), 400
 
         text = data.get('input')
+        if text is None:
+            return jsonify({"error": "'input' must not be null"}), 400
+        if isinstance(text, str):
+            if not text.strip():
+                return jsonify({"error": "'input' must not be empty"}), 400
+        else:
+            # Could support SSML or arrays in future; for now only plain string
+            return jsonify({"error": "'input' must be a string"}), 400
 
         if not REMOVE_FILTER:
             text = prepare_tts_input_with_context(text)
+            if not text:
+                return jsonify({"error": "Text became empty after cleaning; nothing to synthesize"}), 400
 
         # model = data.get('model', DEFAULT_MODEL)
         voice = data.get('voice', DEFAULT_VOICE)
         response_format = data.get('response_format', DEFAULT_RESPONSE_FORMAT)
-        speed = float(data.get('speed', DEFAULT_SPEED))
+        try:
+            speed = float(data.get('speed', DEFAULT_SPEED))
+        except (TypeError, ValueError):
+            return jsonify({"error": "'speed' must be a number"}), 400
+        if not (0.0 <= speed <= 2.0):
+            return jsonify({"error": "'speed' must be between 0 and 2"}), 400
 
         include_word_boundaries = bool(data.get('include_word_boundaries', False))
         subtitle_format = data.get('subtitle_format')
@@ -141,6 +156,15 @@ def text_to_speech():
                 )
             except ValueError as exc:
                 return jsonify({"error": str(exc)}), 400
+            except Exception as exc:
+                # Provide clearer mapping for common upstream issues
+                message = str(exc)
+                if "No audio was received" in message:
+                    return jsonify({
+                        "error": "No audio received from TTS upstream",
+                        "hint": "Try a different voice, simplify text, or reduce request rate",
+                    }), 502
+                raise
 
             if isinstance(synthesis_result, dict):
                 output_file_path = synthesis_result["audio_path"]
