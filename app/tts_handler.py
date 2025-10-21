@@ -33,7 +33,7 @@ AUDIO_MAKEUP_GAIN_DB = float(os.getenv('AUDIO_MAKEUP_GAIN_DB', '0'))
 DEFAULT_LANGUAGE = os.getenv('DEFAULT_LANGUAGE', DEFAULT_CONFIGS["DEFAULT_LANGUAGE"])
 
 # Global concurrency limit to protect upstream service
-MAX_CONCURRENT_TTS = int(os.getenv('MAX_CONCURRENT_TTS', '4'))
+MAX_CONCURRENT_TTS = int(os.getenv('MAX_CONCURRENT_TTS', '2'))
 _TTS_CONCURRENCY_GUARD = threading.BoundedSemaphore(max(1, MAX_CONCURRENT_TTS))
 
 # OpenAI voice names mapped to edge-tts equivalents
